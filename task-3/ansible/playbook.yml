@@ -1,0 +1,85 @@
+---
+- name: Install Docker and Nginx on Ubuntu
+  hosts: all
+  become: yes
+  tasks:
+
+    - name: Update APT package index
+      apt:
+        update_cache: yes
+
+    - name: Install necessary packages
+      apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - software-properties-common
+          - docker.io
+          - nginx
+        state: present
+
+    - name: Start and enable Docker service
+      systemd:
+        name: docker
+        enabled: yes
+        state: started
+
+    - name: Copy Node.js application folder to the remote server
+      copy:
+        src: ./node-app
+        dest: /home/ubuntu
+        owner: "{{ ansible_user_id }}"
+        group: "{{ ansible_user_id }}"
+        mode: '0755'
+
+    - name: Build Docker image for Node.js app
+      command: >
+        docker build -t node_app .
+      args:
+        chdir: /home/ubuntu/node-app/
+
+    - name: Check if Docker container exists (running or stopped)
+      shell: docker ps -a -q -f name=node_app_container
+      register: docker_container_id
+
+    - name: Stop and remove existing Docker container (if it exists)
+      when: docker_container_id.stdout != ""
+      block:
+        - name: Stop Docker container (if running)
+          shell: docker stop node_app_container || true
+
+        - name: Remove Docker container
+          shell: docker rm node_app_container
+
+    - name: Run Docker container from Node.js app image
+      command: >
+        docker run -d --name node_app_container -p 3000:3000 node_app
+
+    - name: Copy custom Nginx reverse proxy configuration file
+      copy:
+        src: ./nginx_reverse_proxy.conf
+        dest: /etc/nginx/sites-available/node_app
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Enable Nginx site by creating symlink
+      file:
+        src: /etc/nginx/sites-available/node_app
+        dest: /etc/nginx/sites-enabled/node_app
+        state: link
+
+    - name: Remove default Nginx configuration (optional)
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+
+    - name: Test Nginx configuration
+      command: nginx -t
+
+    - name: Restart Nginx to apply configuration changes
+      systemd:
+        name: nginx
+        state: restarted
+        enabled: yes
